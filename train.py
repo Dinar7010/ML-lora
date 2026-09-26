@@ -12,7 +12,7 @@ from tqdm import tqdm
 from model import RoleClassifier, build_global_attention_mask, BASE_MODEL_NAME, ROLES
 from dataset import RoleDataset
 
-BATCH_SIZE = 1
+BATCH_SIZE = 8
 ACCUM_STEPS = 8
 LEARNING_RATE = 2e-4
 EPOCHS = 5
