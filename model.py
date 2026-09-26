@@ -11,12 +11,12 @@ ROLES = ["истец", "ответчик", "третье лицо"]  # поря�
 class RoleClassifier(nn.Module):
     def __init__(
         self,
-        base_model_name: str = BASE_MODEL_NAME,
-        num_labels: int = len(ROLES),
-        lora_r: int = 8,
-        lora_alpha: int = 16,
-        lora_dropout: float = 0.1,
-        head_dropout: float = 0.1,
+        base_model_name= BASE_MODEL_NAME,
+        num_labels= len(ROLES),
+        lora_r = 8,
+        lora_alpha = 16,
+        lora_dropout = 0.1,
+        head_dropout = 0.1,
     ):
         super().__init__()
 
