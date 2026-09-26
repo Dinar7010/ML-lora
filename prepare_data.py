@@ -76,7 +76,7 @@ def split_by_document(examples, val_ratio=0.15, test_ratio=0.15, seed=42):
     return train, val, test
 
 
-def save_jsonl(examples: list[dict], path: str):
+def save_jsonl(examples, path):
     with open(path, "w", encoding="utf-8") as f:
         for ex in examples:
             f.write(json.dumps(ex, ensure_ascii=False) + "\n")
