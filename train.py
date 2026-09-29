@@ -8,6 +8,7 @@ from torch.utils.data import DataLoader
 from sklearn.metrics import classification_report, confusion_matrix
 from transformers import LongformerTokenizerFast
 from tqdm import tqdm
+from contextlib import nullcontext
 
 from model import RoleClassifier, build_global_attention_mask, BASE_MODEL_NAME, ROLES
 from dataset import RoleDataset
@@ -44,7 +45,7 @@ def move_batch_to_device(batch, device):
     }
 
 
-def run_epoch(model, loader, device, criterion, optimizer=None, scaler=None, accum_steps=1):
+def run_epoch(model, loader, device, criterion, optimizer=None, accum_steps=1, use_amp=False):
     is_train = optimizer is not None
     model.train() if is_train else model.eval()
 
@@ -52,18 +53,16 @@ def run_epoch(model, loader, device, criterion, optimizer=None, scaler=None, acc
     all_preds, all_labels = [], []
     n_batches = len(loader)
 
-    if is_train:
-        optimizer.zero_grad()
+    with torch.set_grad_enabled(is_train):
+        progress = tqdm(loader, total=n_batches, desc="train" if is_train else "eval")
 
-    progress = tqdm(loader, total=n_batches, desc="train" if is_train else "eval")
-
-    grad_context = torch.enable_grad() if is_train else torch.no_grad()
-    with grad_context:
         for step, raw_batch in enumerate(progress):
             batch = move_batch_to_device(raw_batch, device)
             global_mask = build_global_attention_mask(batch["input_ids"])
 
-            with torch.autocast(device_type=device.type, enabled=(device.type == "cuda")):
+            context = torch.autocast(device_type=device.type) if (use_amp and device.type == "cuda") else nullcontext()
+
+            with context:
                 logits = model(
                     input_ids=batch["input_ids"],
                     attention_mask=batch["attention_mask"],
@@ -72,21 +71,18 @@ def run_epoch(model, loader, device, criterion, optimizer=None, scaler=None, acc
                 loss = criterion(logits, batch["label"])
 
             if is_train:
-                scaler.scale(loss / accum_steps).backward()
-
+                (loss / accum_steps).backward()
                 is_accum_boundary = (step + 1) % accum_steps == 0
                 is_last_batch = (step + 1) == n_batches
                 if is_accum_boundary or is_last_batch:
-                    scaler.step(optimizer)
-                    scaler.update()
+                    optimizer.step()
                     optimizer.zero_grad()
-
             total_loss += loss.item()
             progress.set_postfix(loss=f"{loss.item():.4f}")
-
             preds = logits.argmax(dim=-1)
             all_preds.extend(preds.detach().cpu().numpy().tolist())
             all_labels.extend(batch["label"].detach().cpu().numpy().tolist())
+
     avg_loss = total_loss / n_batches
     return avg_loss, all_preds, all_labels
 
@@ -116,13 +112,11 @@ def train():
     print(f"Веса классов {ROLES}: {class_weights.tolist()}")
     criterion = nn.CrossEntropyLoss(weight=class_weights)
 
-    scaler = torch.amp.GradScaler(device.type, enabled=(device.type == "cuda"))
-
     best_val_loss = float("inf")
 
     for epoch in range(1, EPOCHS + 1):
-        train_loss, _, _ = run_epoch(model, train_loader, device, criterion, optimizer, scaler, ACCUM_STEPS)
-        val_loss, val_preds, val_labels = run_epoch(model, val_loader, device, criterion)
+        train_loss, _, _ = run_epoch(model, train_loader, device, criterion, optimizer=optimizer, accum_steps=ACCUM_STEPS, use_amp=False)
+        val_loss, val_preds, val_labels = run_epoch(model, val_loader, device, criterion, optimizer=None, use_amp=False)
 
         print(f"\n Эпоха {epoch}/{EPOCHS}")
         print(f"train loss: {train_loss:.4f}, val loss: {val_loss:.4f}")
@@ -134,10 +128,10 @@ def train():
             torch.save(model.classifier.state_dict(), HEAD_OUT_PATH)
 
     model.encoder.load_adapter(ADAPTER_OUT_DIR, adapter_name="default")
-    model.classifier.load_state_dict(torch.load(HEAD_OUT_PATH, map_location=device))
+    model.classifier.load_state_dict(torch.load(HEAD_OUT_PATH, map_location=device, weights_only=True))
 
     print("\n финальная оценка на test ")
-    test_loss, test_preds, test_labels = run_epoch(model, test_loader, device, criterion)
+    test_loss, test_preds, test_labels = run_epoch(model, test_loader, device, criterion,optimizer=None, use_amp=False)
     print(f"test loss: {test_loss:.4f}")
     print(classification_report(test_labels, test_preds, target_names=ROLES, zero_division=0))
     print("Confusion matrix", "):")
