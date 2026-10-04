@@ -26,7 +26,7 @@ class RoleClassifier(nn.Module):
             r=lora_r,
             lora_alpha=lora_alpha,
             lora_dropout=lora_dropout,
-            target_modules=["query", "value"],
+            target_modules=["query", "value","query_global","value_global"],
             bias="none",
             task_type=TaskType.FEATURE_EXTRACTION,
         )

@@ -13,10 +13,10 @@ from contextlib import nullcontext
 from model import RoleClassifier, build_global_attention_mask, BASE_MODEL_NAME, ROLES
 from dataset import RoleDataset
 
-BATCH_SIZE = 8
-ACCUM_STEPS = 8
+BATCH_SIZE = 2
+ACCUM_STEPS = 4
 LEARNING_RATE = 2e-4
-EPOCHS = 5
+EPOCHS = 15
 LORA_R = 8
 LORA_ALPHA = 16
 LORA_DROPOUT = 0.1
