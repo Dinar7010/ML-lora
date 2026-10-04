@@ -45,7 +45,14 @@ def move_batch_to_device(batch, device):
     }
 
 
-def run_epoch(model, loader, device, criterion, optimizer=None, accum_steps=1, use_amp=False):
+def get_settings(device):
+    if device.type != "cuda":
+        return None, False
+    if torch.cuda.get_device_capability(device)[0]>=8:
+        return torch.bfloat16, False
+    return torch.float16, True
+
+def run_epoch(model, loader, device, criterion, optimizer=None, accum_steps=1, amp_dtype=None,scaler=None):
     is_train = optimizer is not None
     model.train() if is_train else model.eval()
 
@@ -60,7 +67,7 @@ def run_epoch(model, loader, device, criterion, optimizer=None, accum_steps=1, u
             batch = move_batch_to_device(raw_batch, device)
             global_mask = build_global_attention_mask(batch["input_ids"])
 
-            context = torch.autocast(device_type=device.type) if (use_amp and device.type == "cuda") else nullcontext()
+            context = torch.autocast(device_type=device.type,dtype=amp_dtype) if amp_dtype is not None else nullcontext()
 
             with context:
                 logits = model(
@@ -71,11 +78,12 @@ def run_epoch(model, loader, device, criterion, optimizer=None, accum_steps=1, u
                 loss = criterion(logits, batch["label"])
 
             if is_train:
-                (loss / accum_steps).backward()
+                scaler.scale(loss / accum_steps).backward()
                 is_accum_boundary = (step + 1) % accum_steps == 0
                 is_last_batch = (step + 1) == n_batches
                 if is_accum_boundary or is_last_batch:
-                    optimizer.step()
+                    scaler.step(optimizer)
+                    scaler.update()
                     optimizer.zero_grad()
             total_loss += loss.item()
             progress.set_postfix(loss=f"{loss.item():.4f}")
@@ -112,11 +120,15 @@ def train():
     print(f"Веса классов {ROLES}: {class_weights.tolist()}")
     criterion = nn.CrossEntropyLoss(weight=class_weights)
 
+    amp_dtype, use_scaler = get_settings(device)
+    scaler = torch.amp.GradScaler(device.type, enabled=use_scaler)
+    print(f"Смешанная точность: {amp_dtype}")
+
     best_val_loss = float("inf")
 
     for epoch in range(1, EPOCHS + 1):
-        train_loss, _, _ = run_epoch(model, train_loader, device, criterion, optimizer=optimizer, accum_steps=ACCUM_STEPS, use_amp=False)
-        val_loss, val_preds, val_labels = run_epoch(model, val_loader, device, criterion, optimizer=None, use_amp=False)
+        train_loss, _, _ = run_epoch(model, train_loader, device, criterion, optimizer=optimizer, accum_steps=ACCUM_STEPS, amp_dtype=amp_dtype,scaler=scaler)
+        val_loss, val_preds, val_labels = run_epoch(model, val_loader, device, criterion, optimizer=None, amp_dtype=amp_dtype)
 
         print(f"\n Эпоха {epoch}/{EPOCHS}")
         print(f"train loss: {train_loss:.4f}, val loss: {val_loss:.4f}")
@@ -131,7 +143,7 @@ def train():
     model.classifier.load_state_dict(torch.load(HEAD_OUT_PATH, map_location=device, weights_only=True))
 
     print("\n финальная оценка на test ")
-    test_loss, test_preds, test_labels = run_epoch(model, test_loader, device, criterion,optimizer=None, use_amp=False)
+    test_loss, test_preds, test_labels = run_epoch(model, test_loader, device, criterion,optimizer=None, amp_dtype=amp_dtype)
     print(f"test loss: {test_loss:.4f}")
     print(classification_report(test_labels, test_preds, target_names=ROLES, zero_division=0))
     print("Confusion matrix", "):")
