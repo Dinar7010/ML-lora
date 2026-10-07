@@ -9,7 +9,6 @@ from sklearn.metrics import classification_report, confusion_matrix
 from transformers import LongformerTokenizerFast
 from tqdm import tqdm
 from contextlib import nullcontext
-from peft import PeftModel
 
 from model import RoleClassifier, build_global_attention_mask, BASE_MODEL_NAME, ROLES,MAX_LENGTH
 from dataset import RoleDataset
@@ -67,7 +66,6 @@ def run_epoch(model, loader, device, criterion, optimizer=None, accum_steps=1, a
 
         for step, raw_batch in enumerate(progress):
             batch = move_batch_to_device(raw_batch, device)
-            global_mask = build_global_attention_mask(batch["input_ids"], batch["target_mask"])
 
             context = torch.autocast(device_type=device.type,dtype=amp_dtype) if amp_dtype is not None else nullcontext()
 
@@ -75,7 +73,7 @@ def run_epoch(model, loader, device, criterion, optimizer=None, accum_steps=1, a
                 logits = model(
                     input_ids=batch["input_ids"],
                     attention_mask=batch["attention_mask"],
-                    target_mask=batch["target_mask"],  # <-- ИСПРАВИТЬ
+                    target_mask=batch["target_mask"],
                 )
                 loss = criterion(logits, batch["label"])
 
@@ -141,7 +139,7 @@ def train():
             model.encoder.save_pretrained(ADAPTER_OUT_DIR)
             torch.save(model.classifier.state_dict(), HEAD_OUT_PATH)
 
-    model.encoder = PeftModel.from_pretrained(model.encoder, ADAPTER_OUT_DIR)
+    model.encoder.load_adapter(ADAPTER_OUT_DIR, adapter_name="default")
     model.classifier.load_state_dict(torch.load(HEAD_OUT_PATH, map_location=device, weights_only=True))
 
     print("\n финальная оценка на test ")

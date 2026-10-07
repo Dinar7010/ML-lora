@@ -1,8 +1,7 @@
-# dataset.py
 import json
 import torch
 from torch.utils.data import Dataset
-from model import ROLES  # <-- Добавляем импорт
+from model import ROLES
 
 class RoleDataset(Dataset):
     def __init__(self, jsonl_path, tokenizer, max_length):
@@ -41,9 +40,7 @@ class RoleDataset(Dataset):
                     target_mask[i] = True
 
         if not target_mask.any():
-            target_mask[0] = True
-
-        # ИСПРАВЛЕНО: читаем ключ "role" и маппим строку в число через индекс в ROLES
+            raise ValueError(f"инн {inn} не попал в токены")
         role_str = ex["role"]
         label = ROLES.index(role_str)
 
@@ -51,5 +48,5 @@ class RoleDataset(Dataset):
             "input_ids": input_ids,
             "attention_mask": attention_mask,
             "target_mask": target_mask,
-            "label": label  # <-- Теперь это число
+            "label": label
         }
