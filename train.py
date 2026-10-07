@@ -9,8 +9,9 @@ from sklearn.metrics import classification_report, confusion_matrix
 from transformers import LongformerTokenizerFast
 from tqdm import tqdm
 from contextlib import nullcontext
+from peft import PeftModel
 
-from model import RoleClassifier, build_global_attention_mask, BASE_MODEL_NAME, ROLES
+from model import RoleClassifier, build_global_attention_mask, BASE_MODEL_NAME, ROLES,MAX_LENGTH
 from dataset import RoleDataset
 
 BATCH_SIZE = 2
@@ -41,6 +42,7 @@ def move_batch_to_device(batch, device):
     return {
         "input_ids": batch["input_ids"].to(device),
         "attention_mask": batch["attention_mask"].to(device),
+        "target_mask": batch["target_mask"].to(device),
         "label": batch["label"].to(device),
     }
 
@@ -65,7 +67,7 @@ def run_epoch(model, loader, device, criterion, optimizer=None, accum_steps=1, a
 
         for step, raw_batch in enumerate(progress):
             batch = move_batch_to_device(raw_batch, device)
-            global_mask = build_global_attention_mask(batch["input_ids"])
+            global_mask = build_global_attention_mask(batch["input_ids"], batch["target_mask"])
 
             context = torch.autocast(device_type=device.type,dtype=amp_dtype) if amp_dtype is not None else nullcontext()
 
@@ -73,7 +75,7 @@ def run_epoch(model, loader, device, criterion, optimizer=None, accum_steps=1, a
                 logits = model(
                     input_ids=batch["input_ids"],
                     attention_mask=batch["attention_mask"],
-                    global_attention_mask=global_mask,
+                    target_mask=batch["target_mask"],  # <-- ИСПРАВИТЬ
                 )
                 loss = criterion(logits, batch["label"])
 
@@ -101,17 +103,17 @@ def train():
     if device.type != "cuda":
         print("cuda недоступна")
     tokenizer = LongformerTokenizerFast.from_pretrained(BASE_MODEL_NAME)
-    train_ds = RoleDataset(TRAIN_PATH, tokenizer)
-    val_ds = RoleDataset(VAL_PATH, tokenizer)
-    test_ds = RoleDataset(TEST_PATH, tokenizer)
+    train_ds = RoleDataset(TRAIN_PATH, tokenizer, max_length=MAX_LENGTH)
+    val_ds = RoleDataset(VAL_PATH, tokenizer, max_length=MAX_LENGTH)
+    test_ds = RoleDataset(TEST_PATH, tokenizer, max_length=MAX_LENGTH)
     print(f"train: {len(train_ds)}, val: {len(val_ds)}, test: {len(test_ds)}")
 
     train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True)
     val_loader = DataLoader(val_ds, batch_size=BATCH_SIZE, shuffle=False)
     test_loader = DataLoader(test_ds, batch_size=BATCH_SIZE, shuffle=False)
 
-    model = RoleClassifier(lora_r=LORA_R, lora_alpha=LORA_ALPHA, lora_dropout=LORA_DROPOUT).to(device)
-    model.print_trainable_parameters()
+    model = RoleClassifier().to(device)
+    model.encoder.print_trainable_parameters()
 
     trainable_params = [p for p in model.parameters() if p.requires_grad]
     optimizer = AdamW(trainable_params, lr=LEARNING_RATE)
@@ -139,7 +141,7 @@ def train():
             model.encoder.save_pretrained(ADAPTER_OUT_DIR)
             torch.save(model.classifier.state_dict(), HEAD_OUT_PATH)
 
-    model.encoder.load_adapter(ADAPTER_OUT_DIR, adapter_name="default")
+    model.encoder = PeftModel.from_pretrained(model.encoder, ADAPTER_OUT_DIR)
     model.classifier.load_state_dict(torch.load(HEAD_OUT_PATH, map_location=device, weights_only=True))
 
     print("\n финальная оценка на test ")

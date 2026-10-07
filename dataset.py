@@ -1,29 +1,55 @@
+# dataset.py
 import json
 import torch
 from torch.utils.data import Dataset
-from model import tokenize_example, ROLES, MAX_LENGTH
+from model import ROLES  # <-- Добавляем импорт
 
 class RoleDataset(Dataset):
-    def __init__(self, jsonl_path, tokenizer, max_length = MAX_LENGTH):
-        self.examples = []
-        with open(jsonl_path, "r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if line:
-                    self.examples.append(json.loads(line))
+    def __init__(self, jsonl_path, tokenizer, max_length):
         self.tokenizer = tokenizer
         self.max_length = max_length
-        self.label2id = {role: idx for idx, role in enumerate(ROLES)}
+        with open(jsonl_path, "r", encoding="utf-8") as f:
+            self.examples = [json.loads(line) for line in f]
 
     def __len__(self):
         return len(self.examples)
 
     def __getitem__(self, idx):
         ex = self.examples[idx]
-        encoded = tokenize_example(self.tokenizer, ex["inn"], ex["excerpt"], self.max_length)
+        text = ex["excerpt"]
+        inn = ex["inn"]
+
+        encoding = self.tokenizer(
+            text,
+            truncation=True,
+            max_length=self.max_length,
+            padding="max_length",
+            return_tensors="pt",
+            return_offsets_mapping=True
+        )
+        offsets = encoding.pop("offset_mapping")[0]
+        input_ids = encoding["input_ids"][0]
+        attention_mask = encoding["attention_mask"][0]
+
+        target_mask = torch.zeros_like(input_ids, dtype=torch.bool)
+
+        inn_start = text.find(inn)
+        if inn_start != -1:
+            inn_end = inn_start + len(inn)
+            for i, (start, end) in enumerate(offsets):
+                if start < inn_end and end > inn_start:
+                    target_mask[i] = True
+
+        if not target_mask.any():
+            target_mask[0] = True
+
+        # ИСПРАВЛЕНО: читаем ключ "role" и маппим строку в число через индекс в ROLES
+        role_str = ex["role"]
+        label = ROLES.index(role_str)
 
         return {
-            "input_ids": encoded["input_ids"].squeeze(0),
-            "attention_mask": encoded["attention_mask"].squeeze(0),
-            "label": torch.tensor(self.label2id[ex["role"]], dtype=torch.long),
+            "input_ids": input_ids,
+            "attention_mask": attention_mask,
+            "target_mask": target_mask,
+            "label": label  # <-- Теперь это число
         }

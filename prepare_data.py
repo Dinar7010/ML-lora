@@ -2,7 +2,7 @@ import json
 import random
 from collections import Counter
 
-ROLES = ["истец", "ответчик", "третье лицо", "иное"]
+ROLES = ["истец", "ответчик", "третье лицо"]
 HEAD_CHARS = 3000
 TAIL_CHARS = 6000
 

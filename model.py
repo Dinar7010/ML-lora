@@ -1,87 +1,65 @@
+# model.py
 import torch
 import torch.nn as nn
-from transformers import LongformerModel, LongformerTokenizerFast
-from peft import LoraConfig, get_peft_model, TaskType
+from transformers import LongformerModel
+from peft import get_peft_model, LoraConfig, TaskType  # <-- Добавляем PEFT
 
 BASE_MODEL_NAME = "kazzand/ru-longformer-base-4096"
 MAX_LENGTH = 4096
-ROLES = ["истец", "ответчик", "третье лицо"]  # порядок = индексы классов 0,1,2
+ROLES = ["истец", "ответчик", "третье лицо"]
+
+
+def build_global_attention_mask(input_ids: torch.Tensor, target_mask: torch.Tensor) -> torch.Tensor:
+    global_mask = torch.zeros_like(input_ids, dtype=torch.int32)
+    global_mask[:, 0] = 1
+    global_mask = global_mask | target_mask.int()
+    return global_mask
 
 
 class RoleClassifier(nn.Module):
-    def __init__(
-        self,
-        base_model_name= BASE_MODEL_NAME,
-        num_labels= len(ROLES),
-        lora_r = 8,
-        lora_alpha = 16,
-        lora_dropout = 0.1,
-        head_dropout = 0.1,
-    ):
+    def __init__(self, num_classes=3):
         super().__init__()
 
-        base = LongformerModel.from_pretrained(base_model_name)
+        # 1. Загружаем базовую модель
+        self.encoder = LongformerModel.from_pretrained(BASE_MODEL_NAME)
 
-        lora_config = LoraConfig(
-            r=lora_r,
-            lora_alpha=lora_alpha,
-            lora_dropout=lora_dropout,
-            target_modules=["query", "value","query_global","value_global"],
-            bias="none",
+        # 2. Настраиваем LoRA ТОЛЬКО на query и value (как ты и планировал)
+        # В Longformer модули внимания обычно называются 'query' и 'value'
+        peft_config = LoraConfig(
             task_type=TaskType.FEATURE_EXTRACTION,
+            inference_mode=False,
+            r=8,
+            lora_alpha=16,
+            lora_dropout=0.1,
+            target_modules=["query", "value","query_global","value_global"]
         )
-        self.encoder = get_peft_model(base, lora_config)
-        hidden_size = self.encoder.config.hidden_size
-        self.head_dropout = nn.Dropout(head_dropout)
-        self.classifier = nn.Linear(hidden_size, num_labels)
 
-    def forward(self, input_ids, attention_mask, global_attention_mask):
-        outputs = self.encoder(
+        # 3. Оборачиваем энкодер. PEFT автоматически заморозит базовые веса
+        # и сделает requires_grad=True только для весов LoRA.
+        self.encoder = get_peft_model(self.encoder, peft_config)
+
+        # (Опционально) Раскомментируй, чтобы увидеть красивую статистику в консоли:
+        # self.encoder.print_trainable_parameters()
+
+        # 4. Голова классификатора (всегда требует градиента)
+        self.classifier = nn.Linear(self.encoder.config.hidden_size, num_classes)
+
+    def forward(self, input_ids, attention_mask, target_mask):
+        global_attention_mask = build_global_attention_mask(input_ids, target_mask)
+
+        # Важно: при использовании PEFT мы вызываем self.encoder как обычно,
+        # он сам знает, как применить LoRA-модули внутри.
+        out = self.encoder(
             input_ids=input_ids,
             attention_mask=attention_mask,
-            global_attention_mask=global_attention_mask,
+            global_attention_mask=global_attention_mask
         )
-        cls_repr = outputs.last_hidden_state[:, 0, :]
-        cls_repr = self.head_dropout(cls_repr)
-        logits = self.classifier(cls_repr)
+
+        hidden_states = out.last_hidden_state
+        mask_expanded = target_mask.unsqueeze(-1).float()
+        sum_embeddings = torch.sum(hidden_states * mask_expanded, dim=1)
+        sum_mask = torch.clamp(mask_expanded.sum(dim=1), min=1e-9)
+
+        pooled_output = sum_embeddings / sum_mask
+        logits = self.classifier(pooled_output)
         return logits
-
-    def print_trainable_parameters(self):
-        self.encoder.print_trainable_parameters()
-        head_params = sum(p.numel() for p in self.classifier.parameters())
-        print(f"Параметры classifier head (все обучаемые): {head_params}")
-
-
-def build_global_attention_mask(input_ids):
-    mask = torch.zeros_like(input_ids)
-    mask[:, 0] = 1
-    return mask
-
-
-def tokenize_example(tokenizer, inn, excerpt, max_length = MAX_LENGTH):
-    encoded = tokenizer(
-        f"ИНН: {inn}",
-        excerpt,
-        truncation="only_second",
-        max_length=max_length,
-        padding="max_length",
-        return_tensors="pt",
-    )
-    return encoded
-
-
-if __name__ == "__main__":
-    tokenizer = LongformerTokenizerFast.from_pretrained(BASE_MODEL_NAME)
-    model = RoleClassifier()
-    model.print_trainable_parameters()
-
-    encoded = tokenize_example(tokenizer, "3444048169", "по иску 3444048169 к 3444125462 ...", max_length=128)
-    global_mask = build_global_attention_mask(encoded["input_ids"])
-
-    logits = model(
-        input_ids=encoded["input_ids"],
-        attention_mask=encoded["attention_mask"],
-        global_attention_mask=global_mask,
-    )
-    print("Форма логитов:", logits.shape)
-    print("Логиты:", logits)
