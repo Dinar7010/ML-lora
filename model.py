@@ -26,7 +26,9 @@ class RoleClassifier(nn.Module):
             r=8,
             lora_alpha=16,
             lora_dropout=0.1,
-            target_modules=["query", "value","query_global","value_global"]
+            target_modules=["query", "value",
+                            "query_global","value_global",
+                            "output","output_global"]
         )
 
         self.encoder = get_peft_model(self.encoder, peft_config)

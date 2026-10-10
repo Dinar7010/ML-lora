@@ -9,6 +9,7 @@ from sklearn.metrics import classification_report, confusion_matrix
 from transformers import LongformerTokenizerFast
 from tqdm import tqdm
 from contextlib import nullcontext
+from peft import PeftModel
 
 from model import RoleClassifier, build_global_attention_mask, BASE_MODEL_NAME, ROLES,MAX_LENGTH
 from dataset import RoleDataset
@@ -50,8 +51,8 @@ def get_settings(device):
     if device.type != "cuda":
         return None, False
     if torch.cuda.get_device_capability(device)[0]>=8:
-        return torch.bfloat16, False
-    return torch.float16, True
+        return torch.bfloat16
+    return torch.float16
 
 def run_epoch(model, loader, device, criterion, optimizer=None, accum_steps=1, amp_dtype=None,scaler=None):
     is_train = optimizer is not None
@@ -78,12 +79,11 @@ def run_epoch(model, loader, device, criterion, optimizer=None, accum_steps=1, a
                 loss = criterion(logits, batch["label"])
 
             if is_train:
-                scaler.scale(loss / accum_steps).backward()
+                (loss / accum_steps).backward()
                 is_accum_boundary = (step + 1) % accum_steps == 0
                 is_last_batch = (step + 1) == n_batches
                 if is_accum_boundary or is_last_batch:
-                    scaler.step(optimizer)
-                    scaler.update()
+                    optimizer.step()
                     optimizer.zero_grad()
             total_loss += loss.item()
             progress.set_postfix(loss=f"{loss.item():.4f}")
@@ -120,8 +120,7 @@ def train():
     print(f"Веса классов {ROLES}: {class_weights.tolist()}")
     criterion = nn.CrossEntropyLoss(weight=class_weights)
 
-    amp_dtype, use_scaler = get_settings(device)
-    scaler = torch.amp.GradScaler(device.type, enabled=use_scaler)
+    amp_dtype = get_settings(device)
     print(f"Смешанная точность: {amp_dtype}")
 
     best_val_loss = float("inf")
@@ -139,7 +138,7 @@ def train():
             model.encoder.save_pretrained(ADAPTER_OUT_DIR)
             torch.save(model.classifier.state_dict(), HEAD_OUT_PATH)
 
-    model.encoder.load_adapter(ADAPTER_OUT_DIR, adapter_name="default")
+    model.encoder=PeftModel.from_pretrained(model.encoder,ADAPTER_OUT_DIR)
     model.classifier.load_state_dict(torch.load(HEAD_OUT_PATH, map_location=device, weights_only=True))
 
     print("\n финальная оценка на test ")

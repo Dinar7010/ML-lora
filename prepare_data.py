@@ -3,8 +3,8 @@ import random
 from collections import Counter
 
 ROLES = ["истец", "ответчик", "третье лицо"]
-HEAD_CHARS = 3000
-TAIL_CHARS = 6000
+HEAD_CHARS = 2000
+TAIL_CHARS = 4000
 
 def build_excerpt(text,head=HEAD_CHARS,tail=TAIL_CHARS):
     if len(text)<=head+tail:
