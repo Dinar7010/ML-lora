@@ -6,7 +6,7 @@ import torch.nn as nn
 from torch.optim import AdamW
 from torch.utils.data import DataLoader
 from sklearn.metrics import classification_report, confusion_matrix
-from transformers import LongformerTokenizerFast
+from transformers import LongformerTokenizerFast, get_linear_schedule_with_warmup
 from tqdm import tqdm
 from contextlib import nullcontext
 from peft import PeftModel
@@ -16,8 +16,8 @@ from dataset import RoleDataset
 
 BATCH_SIZE = 2
 ACCUM_STEPS = 4
-LEARNING_RATE = 2e-4
-EPOCHS = 15
+LEARNING_RATE = 3e-4
+EPOCHS = 20
 LORA_R = 8
 LORA_ALPHA = 16
 LORA_DROPOUT = 0.1
@@ -49,12 +49,12 @@ def move_batch_to_device(batch, device):
 
 def get_settings(device):
     if device.type != "cuda":
-        return None, False
+        return None
     if torch.cuda.get_device_capability(device)[0]>=8:
         return torch.bfloat16
     return torch.float16
 
-def run_epoch(model, loader, device, criterion, optimizer=None, accum_steps=1, amp_dtype=None,scaler=None):
+def run_epoch(model, loader, device, criterion, optimizer=None, accum_steps=1, amp_dtype=None,scheduler=None):
     is_train = optimizer is not None
     model.train() if is_train else model.eval()
 
@@ -84,6 +84,7 @@ def run_epoch(model, loader, device, criterion, optimizer=None, accum_steps=1, a
                 is_last_batch = (step + 1) == n_batches
                 if is_accum_boundary or is_last_batch:
                     optimizer.step()
+                    scheduler.step()
                     optimizer.zero_grad()
             total_loss += loss.item()
             progress.set_postfix(loss=f"{loss.item():.4f}")
@@ -116,6 +117,15 @@ def train():
     trainable_params = [p for p in model.parameters() if p.requires_grad]
     optimizer = AdamW(trainable_params, lr=LEARNING_RATE)
 
+    total_steps = len(train_loader) * EPOCHS // ACCUM_STEPS
+    warmup_steps = int(total_steps * 0.1)
+
+    scheduler = get_linear_schedule_with_warmup(
+        optimizer,
+        num_warmup_steps=warmup_steps,
+        num_training_steps=total_steps
+    )
+
     class_weights = compute_class_weights(TRAIN_PATH).to(device)
     print(f"Веса классов {ROLES}: {class_weights.tolist()}")
     criterion = nn.CrossEntropyLoss(weight=class_weights)
@@ -126,7 +136,7 @@ def train():
     best_val_loss = float("inf")
 
     for epoch in range(1, EPOCHS + 1):
-        train_loss, _, _ = run_epoch(model, train_loader, device, criterion, optimizer=optimizer, accum_steps=ACCUM_STEPS, amp_dtype=amp_dtype,scaler=scaler)
+        train_loss, _, _ = run_epoch(model, train_loader, device, criterion, optimizer=optimizer, accum_steps=ACCUM_STEPS, amp_dtype=amp_dtype,scheduler=scheduler)
         val_loss, val_preds, val_labels = run_epoch(model, val_loader, device, criterion, optimizer=None, amp_dtype=amp_dtype)
 
         print(f"\n Эпоха {epoch}/{EPOCHS}")
